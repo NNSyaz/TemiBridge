@@ -29,10 +29,10 @@ router = APIRouter(
 )
 
 #Edge server http url
-EDGE_URL = "http://192.168.0.137:8000"
+EDGE_URL = "http://192.168.0.138:8000"
 
 #Edge server websocket url
-EDGE_WS = "ws://192.168.0.137:8000"
+EDGE_WS = "ws://192.168.0.138:8000"
 
 @router.get('/edge/hello')
 async def main_hello():
@@ -55,6 +55,28 @@ async def get_poi_list():
     print(poi_list)
 
     return poi_list
+
+@router.get("/set/emergency_stop")
+async def set_emergency_stop(mode: bool):
+    header = {
+        'Content-Type' : 'application/json'
+    }
+
+    parameter = {
+        'enable' : mode
+    }
+
+    payload = json.dumps(parameter)
+
+    print("E STOP: ", payload)
+
+    async with httpx.AsyncClient() as client:
+        url = EDGE_URL+"/edge/v1/robot/set/emergency_stop"
+        r = await client.post(url, headers=header, json=payload)
+        r.raise_for_status()
+        data = r.json()
+
+        return data
     
 @router.get("/set/poi")
 async def set_poi_location(name: str):
@@ -97,9 +119,13 @@ async def go_to_poi(name: str):
     payload = data["data"]
 
     async with httpx.AsyncClient() as client:
-        url = EDGE_URL+"/edge/v1/robot/move/poi"
-        r = await client.post(url, headers=header, json=payload)
-        r.raise_for_status()
-        data = r.json()
+        try:
+            url = EDGE_URL+"/edge/v1/robot/move/poi"
+            r = await client.post(url, headers=header, json=payload)
+            r.raise_for_status()
+            data = r.json()
 
-        return data
+            return data
+        except httpx.ReadTimeout as e:
+            print("Error: ",e)
+            return e
