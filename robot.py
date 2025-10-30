@@ -62,11 +62,9 @@ async def set_emergency_stop(mode: bool):
         'Content-Type' : 'application/json'
     }
 
-    parameter = {
+    payload = {
         'enable' : mode
     }
-
-    payload = json.dumps(parameter)
 
     print("E STOP: ", payload)
 
@@ -129,3 +127,4 @@ async def go_to_poi(name: str):
         except httpx.ReadTimeout as e:
             print("Error: ",e)
             return e
+
