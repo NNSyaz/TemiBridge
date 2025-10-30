@@ -14,6 +14,9 @@ db = mongo_client["robotDB"]
 
 robot_col = db['robots']
 poi_col = db['poi']
+pose_data = {
+    "data" : ""
+}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -95,7 +98,11 @@ async def set_poi_location(name: str):
         
         except Exception as e:
             return f"{e}: Error retrieving position"
-        
+
+async def get_pose():
+     async with httpx.AsyncClient() as client:
+        return pose_data["data"]
+
 @router.get("/move/charge")
 async def go_to_charge():
     async with httpx.AsyncClient() as client:
