@@ -8,6 +8,8 @@ import websockets
 import json
 import httpx
 from redis.asyncio import Redis
+import minimap_test as map
+import  keyboard_input
 
 mongo_client = MongoClient("mongodb://localhost:27017/")
 
@@ -55,7 +57,7 @@ EDGE_WS = "ws://192.168.0.138:8000"
 @router.get('/hello')
 async def main_hello():
     return "hello"
-    
+
 @router.websocket('/ws/hello')
 async def websocket_hello(websocket: WebSocket):
     await websocket.accept()
@@ -208,7 +210,7 @@ async def move_robot():
 @router.get("/test/pose")
 async def get_pose(request: Request):
     pubsub = request.app.state.redis.pubsub()
-    await pubsub.subscribe("robot:pose")
+    await pubsub.subscribe("robot:state")
     print("Subscribed to robot:pose")
 
     try:
@@ -221,6 +223,29 @@ async def get_pose(request: Request):
     except Exception as e:
         print("Subscriber error:", e)
     finally:
+        await pubsub.close()
+        print("Subscriber closed")
+
+@router.websocket("/ws/test/pose")
+async def sub_robot_pose(websocket: WebSocket):
+    await websocket.accept()
+    pubsub = websocket.app.state.redis.pubsub()
+    await pubsub.subscribe("robot:state")
+    print("Subscribed to robot:state")
+
+    try:
+        async for message in pubsub.listen():
+            print("REDIS SUB DATA: ",message)
+            if message["type"] == "message":
+                data = message["data"]
+                data_json = json.loads(data)
+                print("Received robot pose:", data_json)
+                await websocket.send_json(data_json)
+
+    except Exception as e:
+        print("Subscriber error:", e)
+    finally:
+        await websocket.close()
         await pubsub.close()
         print("Subscriber closed")
 
@@ -361,6 +386,88 @@ async def robot_register():
     print("ROBOT LIST: ", robot_list)
 
     return robot_list
+
+#------------- DIRECT CONTROL ------------------
+
+@router.get("/test/command_control")
+async def control_loop():
+    print("RECEIVED")
+    uri = DIRECT_WS+"/ws/v2/topics"
+    print("URL: ",uri)
+    async with websockets.connect(uri) as ws:
+        # Subscribe to twist feedback
+        await ws.send(json.dumps({"disable_topic": ["/slam/state"]}))
+        await ws.send(json.dumps({"enable_topic": ["/tracked_pose","/battery_state"]}))
+        
+        # Switch to remote mode (if required)
+        # await ws.send(... set_control_mode ...)
+
+        while True:
+            # Receive feedback before next command
+            feedback = await ws.recv()
+            data = json.loads(feedback)
+            print(data)
+
+            # Prepare next command
+            twist_cmd = {
+                "topic": "/twist",
+                "linear_velocity": 0,
+                "angular_velocity": -0.6
+            }
+            await ws.send(json.dumps(twist_cmd))
+            await asyncio.sleep(0.1)  # 10Hz update rate
+
+@router.get("/test/direct_control")
+async def control_loop():
+    uri = DIRECT_WS+"/ws/v2/topics"
+    print("URL: ",uri)
+    async with websockets.connect(uri) as ws:
+        # Subscribe to twist feedback
+        await ws.send(json.dumps({"disable_topic": ["/slam/state"]}))
+        await ws.send(json.dumps({"enable_topic": ["/tracked_pose","/battery_state"]}))
+        
+        # Switch to remote mode (if required)
+        # await ws.send(... set_control_mode ...)
+
+        while True:
+            # Receive feedback before next command
+            feedback = await ws.recv()
+            data = json.loads(feedback)
+            print(data)
+
+            # Prepare next command
+            twist_cmd = {
+                "topic": "/twist",
+                "linear_velocity": 0,
+                "angular_velocity": -0.6
+            }
+            await ws.send(json.dumps(twist_cmd))
+            await asyncio.sleep(0.1)  # 10Hz update rate
+
+@router.websocket("/ws/get/lidar")
+async def get_lidar_points(websocket: WebSocket):
+    await websocket.accept()
+    pubsub = websocket.app.state.redis.pubsub()
+    await pubsub.subscribe("robot:lidar")
+    print("Subscribed to robot:lidar")
+
+    try:
+        async for message in pubsub.listen():
+            #print("REDIS SUB DATA: ",message)
+            if message["type"] == "message":
+                data = json.loads(message["data"])
+                #print("Received robot pose:", data)
+                await map.realtime_lidar(data["points"])
+                #map.realtime_lidar(data["points"])
+                await websocket.send_json(data["points"])
+
+    except Exception as e:
+        print("Subscriber error:", e)
+        await map.close_plot()
+    finally:
+        await pubsub.close()
+        await websocket.close()
+        print("Subscriber closed")
 
 #---------------- FUNCTIONS --------------------
 

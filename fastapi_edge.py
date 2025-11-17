@@ -1,4 +1,5 @@
 from fastapi import FastAPI, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient
 from contextlib import asynccontextmanager
 import asyncio
@@ -35,6 +36,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(robot.router)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # or ["http://localhost:5173"] for Vite, etc.
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get('/hello')
 async def main_hello():
