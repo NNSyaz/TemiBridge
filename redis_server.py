@@ -10,6 +10,9 @@ import json
 import httpx
 from redis.asyncio import Redis
 
+#Robot IP
+IP = "192.168.0.250"
+
 #REST URL
 BASE_URL = "https://apiglobal.autoxing.com"
 
@@ -17,10 +20,10 @@ BASE_URL = "https://apiglobal.autoxing.com"
 WS_URL = "wss://serviceglobal.autoxing.com"
 
 #DIRECT ROBOT URL
-DIRECT_URL = "http://192.168.0.250:8090"
+DIRECT_URL = f"http://{IP}:8090"
 
 #DIRECT ROBOT WEBSOCKET URL
-DIRECT_WS = "ws://192.168.0.250:8090"
+DIRECT_WS = f"ws://{IP}:8090"
 
 class ConnectionManager:
     def __init__(self):
@@ -45,10 +48,13 @@ class ConnectionManager:
 ws_manager = ConnectionManager()
 
 async def init_redis(app: FastAPI):
-    app.state.redis = Redis(host="localhost", port=6379, decode_responses=True)
+    r = Redis(host="localhost", port=6379, decode_responses=True)
+    app.state.redis = r
+    #ts = app.state.redis.ts()
 
     print("REDIS SERVER INITIALIZED")
 
+    #await start_redis_status(app.state.redis)
     asyncio.create_task(pub_robot_status(app.state.redis))
     asyncio.create_task(pub_lidar_points(app.state.redis))
 
@@ -58,6 +64,7 @@ async def pub_robot_status(redis: Redis):
     url = DIRECT_WS+"/ws/v2/topics"
     async with websockets.connect(url) as ws:
         try:
+            await start_redis_status(redis, True)
             await ws.send(json.dumps({"disable_topic": ["/slam/state"]}))
             await ws.send(json.dumps({"enable_topic": ["/battery_state"]}))
 
@@ -67,19 +74,30 @@ async def pub_robot_status(redis: Redis):
                 msg = await ws.recv()
                 data = json.loads(msg)
                 topic = data.get("topic")
-
                 if topic == "/battery_state":
                     compile_list.update({"battery":msg})
-                if topic == "/tracked_pose":
-                    compile_list.update({"pose":msg})
                     data_json = json.dumps(compile_list)
 
-                    await redis.publish("robot:state", data_json)
+                    await redis.set("robot:battery", data_json)
+                    #await redis.publish("robot:state", data_json)
 
-                    #print(f"TOPIC PUBLISH: [{round(time.time(),1)}]", data_json)
+                # if topic == "/battery_state":
+                #     compile_list.update({"battery":msg})
+                # if topic == "/tracked_pose":
+                #     compile_list.update({"pose":msg})
+                #     data_json = json.dumps(compile_list)
+
+                #     await redis.publish("robot:state", data_json)
+
+                    #print(f"TOPIC PUBLISH: [{round(time.time(),1)}]", data_json['pose'])
             
         except Exception as e:
             print("WebSocket closed:", e)
+            compile_list.update({"status": 'offline'})
+            data_json = json.dumps(compile_list)
+
+            await redis.publish("robot:state", data_json)
+            await start_redis_status(redis, False)
         finally:
             await ws.close()
 
@@ -98,7 +116,7 @@ async def sub_robot_status(request: Request):
     except Exception as e:
         print("Subscriber error:", e)
     finally:
-        await websocket.close()
+        await websockets.close()
         await pubsub.close()
         print("Subscriber closed")
 
@@ -121,3 +139,19 @@ async def pub_lidar_points(redis: Redis):
 
         except Exception as e:
             print(e)   
+
+async def start_redis_status(redis: Redis, stat: bool):
+    print("ROBOT REDIS BOOL STATUS: ",stat)
+    if stat:
+        status = {
+            "status": "online",
+            "poi": "origin"
+        }
+    else:
+        status = {
+            "status": "offline",
+            "poi": "origin"
+        }
+
+    await redis.set("robot:status", status["status"])
+    await redis.set("robot:last_poi", status["poi"])

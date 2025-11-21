@@ -13,6 +13,9 @@ import  keyboard_input
 
 mongo_client = MongoClient("mongodb://localhost:27017/")
 
+#Robot IP
+IP = "192.168.0.250"
+
 #REST URL
 BASE_URL = "https://apiglobal.autoxing.com"
 
@@ -20,10 +23,10 @@ BASE_URL = "https://apiglobal.autoxing.com"
 WS_URL = "wss://serviceglobal.autoxing.com"
 
 #DIRECT ROBOT URL
-DIRECT_URL = "http://192.168.0.250:8090"
+DIRECT_URL = f"http://{IP}:8090"
 
 #DIRECT ROBOT WEBSOCKET URL
-DIRECT_WS = "ws://192.168.0.250:8090"
+DIRECT_WS = f"ws://{IP}:8090"
 
 db = mongo_client["robotDB"]
 
@@ -36,13 +39,14 @@ pose_data = {
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     mongo_client = MongoClient("mongodb://localhost:27017/")
+    print("PRINT REDIS: ", app.state)
 
     db = mongo_client["robotDB"]
 
     global robot_col
     robot_col = db['robots']
 
-    await stream_robot_pose()
+    #await stream_robot_pose()
 
 router = APIRouter(
     prefix='/api/v1/robot'
@@ -138,8 +142,39 @@ async def websocket_robot_pose(websocket: WebSocket):
         await pubsub.close()
         print("Subscriber closed")
 
+@router.websocket("/ws/get/robot_status")
+async def get_robot_status(websocket: WebSocket):
+    redis = websocket.app.state.redis
+    compile_status = {}
+
+    await websocket.accept()
+
+    try:
+        while True:
+            battery_raw = json.loads(await redis.get("robot:battery"))
+            status = await redis.get("robot:status")
+            poi = await redis.get("robot:last_poi")
+            print("BATTERY RAW DATA", battery_raw)
+            print("STATUS DATA", status)
+            print("poi DATA", poi)
+
+            battery_data = battery_raw["battery"]
+            battery_percent = json.loads(battery_data)
+            print("BATTERY PERCENT", battery_percent)
+
+            compile_status.update({"status": status, "battery": battery_percent["percentage"]*100, "last_poi": poi})
+            await websocket.send_json(compile_status)
+            await asyncio.sleep(1)
+
+    except Exception as e:
+        print(e)
+    finally:
+        await websocket.close()
+
 @router.get("/move/poi")
-async def go_to_poi(name: str):
+async def go_to_poi(name: str, request: Request):
+    redis = request.app.state.redis
+
     header = {
         "Content-Type" : "application/json"
     }
@@ -155,13 +190,21 @@ async def go_to_poi(name: str):
             r.raise_for_status()
             data = r.json()
 
+            status = "active"
+            await redis.set("robot:status", status)
+            await redis.set("robot:last_poi", name)
+
+            test = await redis.get("robot:status")
+            print("REDIS GET DATA", test)
+
             return data
         except httpx.ReadTimeout as e:
             print("Error: ",e)
             return e
 
 @router.get("/move/charge")
-async def move_charge():
+async def move_charge(request: Request):
+    redis = request.app.state.redis
     print("Charging Received")
     header = {
         "Content-Type": "application/json" 
@@ -179,6 +222,7 @@ async def move_charge():
             r.raise_for_status()
             data = r.json()
             print("MOVE ", data)
+            await redis.set("robot:status", "charging")
 
             return data
         except httpx.ConnectTimeout as e:
@@ -358,9 +402,13 @@ async def robot_register(payload: dict = Body(...)):
     nickname = payload["nickname"]
     sn = payload["sn"]
     ip = payload["ip"]
+    status = "idle"
+    last_poi = ""
+    on_time = round(time.time(),1)
+    last_offline = round(time.time(),1)
     time_created = round(time.time(),1)
 
-    info = {"nickname":nickname, "name":name, "data" : {"sn": sn, "ip": ip, "time_created": time_created}}
+    info = {"nickname":nickname, "name":name, "status": status, "last_poi": last_poi, "data" : {"sn": sn, "ip": ip, "time_created": time_created}}
 
     if not robot_col.find_one({"nickname" : nickname}):
         robot_col.insert_one(info)
@@ -387,36 +435,48 @@ async def robot_register():
 
     return robot_list
 
+@router.get("/delete/robot_name")
+async def delete_robot(name: str):
+    print("delete selected")
+    if robot_col.find_one({"nickname" : name}):
+        robot_col.delete_one({"nickname": name})
+        return({"status": 200, "msg" : "Successfully Delete"})
+    else:
+        return({"status": 404, "msg" : "Robot Don't Exist"})
+
 #------------- DIRECT CONTROL ------------------
 
 @router.get("/test/command_control")
-async def control_loop():
+async def control_loop(lin: float, ang: float):
     print("RECEIVED")
     uri = DIRECT_WS+"/ws/v2/topics"
     print("URL: ",uri)
-    async with websockets.connect(uri) as ws:
-        # Subscribe to twist feedback
-        await ws.send(json.dumps({"disable_topic": ["/slam/state"]}))
-        await ws.send(json.dumps({"enable_topic": ["/tracked_pose","/battery_state"]}))
+    try:
+        async with websockets.connect(uri) as ws:
+            # Subscribe to twist feedback
+            await ws.send(json.dumps({"disable_topic": ["/slam/state"]}))
+            await ws.send(json.dumps({"enable_topic": ["/tracked_pose","/battery_state"]}))
+            
+            # Switch to remote mode (if required)
+            # await ws.send(... set_control_mode ...)
+
+            while True:
+                # Receive feedback before next command
+                feedback = await ws.recv()
+                data = json.loads(feedback)
+                print(data)
+
+                # Prepare next command
+                twist_cmd = {
+                    "topic": "/twist",
+                    "linear_velocity": lin,
+                    "angular_velocity": ang
+                }
+                await ws.send(json.dumps(twist_cmd))
+                await asyncio.sleep(0.1)  # 10Hz update rate
+    except Exception as e:
+        await ws.close()
         
-        # Switch to remote mode (if required)
-        # await ws.send(... set_control_mode ...)
-
-        while True:
-            # Receive feedback before next command
-            feedback = await ws.recv()
-            data = json.loads(feedback)
-            print(data)
-
-            # Prepare next command
-            twist_cmd = {
-                "topic": "/twist",
-                "linear_velocity": 0,
-                "angular_velocity": -0.6
-            }
-            await ws.send(json.dumps(twist_cmd))
-            await asyncio.sleep(0.1)  # 10Hz update rate
-
 @router.get("/test/direct_control")
 async def control_loop():
     uri = DIRECT_WS+"/ws/v2/topics"
