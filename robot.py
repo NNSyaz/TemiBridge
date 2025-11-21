@@ -552,4 +552,3 @@ async def stream_robot_pose(redis: Redis):
             print("WebSocket closed:", e)
         finally:
             ws.close()
-
