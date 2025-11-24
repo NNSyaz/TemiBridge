@@ -22,11 +22,7 @@ async def lifespan(app: FastAPI):
     global robot_col
     robot_col = db['robots']
 
-    #app.state.redis = Redis(host="localhost", port=6379, decode_responses=True)
-
     asyncio.create_task(init_redis(app))
-
-    #asyncio.create_task(robot.stream_robot_pose())
 
     print("SERVER INITIALIZED")
 

@@ -11,7 +11,7 @@ import httpx
 from redis.asyncio import Redis
 
 #Robot IP
-IP = "192.168.0.250"
+IP = "192.168.0.47"
 
 #REST URL
 BASE_URL = "https://apiglobal.autoxing.com"
@@ -50,13 +50,11 @@ ws_manager = ConnectionManager()
 async def init_redis(app: FastAPI):
     r = Redis(host="localhost", port=6379, decode_responses=True)
     app.state.redis = r
-    #ts = app.state.redis.ts()
-
     print("REDIS SERVER INITIALIZED")
 
-    #await start_redis_status(app.state.redis)
     asyncio.create_task(pub_robot_status(app.state.redis))
     asyncio.create_task(pub_lidar_points(app.state.redis))
+    asyncio.create_task(robot.monitor_charging_status(app.state.redis))  # ✅ Add 
 
 async def pub_robot_status(redis: Redis):
     compile_list = {}
@@ -79,17 +77,11 @@ async def pub_robot_status(redis: Redis):
                     data_json = json.dumps(compile_list)
 
                     await redis.set("robot:battery", data_json)
-                    #await redis.publish("robot:state", data_json)
-
-                # if topic == "/battery_state":
-                #     compile_list.update({"battery":msg})
-                # if topic == "/tracked_pose":
-                #     compile_list.update({"pose":msg})
-                #     data_json = json.dumps(compile_list)
-
-                #     await redis.publish("robot:state", data_json)
-
-                    #print(f"TOPIC PUBLISH: [{round(time.time(),1)}]", data_json['pose'])
+                    
+                    # Only update status to 'online' if it's not already 'charging' or 'active'
+                    current_status = await redis.get("robot:status")
+                    if current_status not in ["charging", "active"]:
+                        await redis.set("robot:status", "online")
             
         except Exception as e:
             print("WebSocket closed:", e)

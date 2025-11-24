@@ -286,6 +286,68 @@ async def connect_fielder():
         except websockets.exceptions.ConnectionClosed:
             print("Websocket Connection Closed")
 
+@router.get("/get/robot_status")
+async def get_robot_status_rest(sn: str, request: Request):
+    """
+    REST endpoint to get robot status by serial number
+    Returns the current status, battery, and location from Redis
+    """
+    redis = request.app.state.redis
+    
+    try:
+        # Get data from Redis
+        battery_raw = await redis.get("robot:battery")
+        status = await redis.get("robot:status")
+        poi = await redis.get("robot:last_poi")
+        
+        # Parse battery data if it exists
+        battery_percent = 0
+        if battery_raw:
+            try:
+                battery_data = json.loads(battery_raw)
+                battery_json = json.loads(battery_data["battery"])
+                battery_percent = battery_json.get("percentage", 0) * 100
+            except Exception as e:
+                print(f"Error parsing battery data: {e}")
+                battery_percent = 0
+        
+        # Default values if Redis data is missing
+        if not status:
+            status = "offline"
+        if not poi:
+            poi = "unknown"
+        
+        # Return in a format compatible with your frontend
+        response = {
+            "robotStatus": {
+                "state": 2 if status in ["active", "online"] else 0,  # 2 = online, 0 = offline
+                "power": int(battery_percent),
+                "areaName": poi,
+                "status": status
+            },
+            "sn": sn,
+            "battery": int(battery_percent),
+            "last_poi": poi
+        }
+        
+        print(f"REST Status Response for {sn}: {response}")
+        return response
+        
+    except Exception as e:
+        print(f"Error getting robot status for {sn}: {e}")
+        # Return offline status on error
+        return {
+            "robotStatus": {
+                "state": 0,
+                "power": 0,
+                "areaName": "unknown",
+                "status": "offline"
+            },
+            "sn": sn,
+            "battery": 0,
+            "last_poi": "unknown"
+        }
+
 if __name__ == "__main__":
     #generate_sign(APP_ID, APP_SECRET)
     asyncio.run(set_control_mode())

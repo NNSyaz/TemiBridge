@@ -8,13 +8,13 @@ import websockets
 import json
 import httpx
 from redis.asyncio import Redis
-import minimap_test as map
-import  keyboard_input
+# import minimap_test as map
+# import  keyboard_input
 
 mongo_client = MongoClient("mongodb://localhost:27017/")
 
 #Robot IP
-IP = "192.168.0.250"
+IP = "192.168.0.47"
 
 #REST URL
 BASE_URL = "https://apiglobal.autoxing.com"
@@ -52,11 +52,6 @@ router = APIRouter(
     prefix='/api/v1/robot'
 )
 
-#Edge server http url
-EDGE_URL = "http://192.168.0.138:8000"
-
-#Edge server websocket url
-EDGE_WS = "ws://192.168.0.138:8000"
 
 @router.get('/hello')
 async def main_hello():
@@ -222,7 +217,10 @@ async def move_charge(request: Request):
             r.raise_for_status()
             data = r.json()
             print("MOVE ", data)
+            
+            # Set status to charging
             await redis.set("robot:status", "charging")
+            await redis.set("robot:last_poi", "charging_station")
 
             return data
         except httpx.ConnectTimeout as e:
@@ -552,3 +550,27 @@ async def stream_robot_pose(redis: Redis):
             print("WebSocket closed:", e)
         finally:
             ws.close()
+
+
+async def monitor_charging_status(redis: Redis):
+    """Background task to monitor when charging is complete"""
+    while True:
+        try:
+            status = await redis.get("robot:status")
+            if status == "charging":
+                # Get battery data
+                battery_raw = await redis.get("robot:battery")
+                if battery_raw:
+                    battery_data = json.loads(battery_raw)
+                    battery_info = json.loads(battery_data["battery"])
+                    
+                    # If battery is full or not charging anymore, reset status
+                    if battery_info.get("percentage", 0) >= 0.95 or battery_info.get("power_supply_status") == "full":
+                        print("Charging complete, resetting status to online")
+                        await redis.set("robot:status", "online")
+                        await redis.set("robot:last_poi", "charging_station")
+            
+            await asyncio.sleep(5)  # Check every 5 seconds
+        except Exception as e:
+            print(f"Error in charging monitor: {e}")
+            await asyncio.sleep(5)
