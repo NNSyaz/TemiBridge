@@ -8,8 +8,8 @@ import websockets
 import json
 import httpx
 from redis.asyncio import Redis
-import minimap_test as map
-import  keyboard_input
+# import minimap_test as map
+# import  keyboard_input
 
 mongo_client = MongoClient("mongodb://localhost:27017/")
 
@@ -553,4 +553,3 @@ async def stream_robot_pose(redis: Redis):
             print("WebSocket closed:", e)
         finally:
             ws.close()
-

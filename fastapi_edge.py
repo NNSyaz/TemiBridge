@@ -51,4 +51,3 @@ async def main_hello():
 
 if __name__ == "__main__":
     uvicorn.run("fastapi_edge:app", host='0.0.0.0', reload=True)
-
