@@ -108,6 +108,7 @@ async def set_poi_location(name: str, request: Request):
     coord = topic_data['pos']
     ori = topic_data['ori']
 
+
     poi = {"name" : name, "data" : {"target_x" : coord[0], "target_y" : coord[1], "target_ori" : ori}, "time_created" : round(time.time(),1)}
     poi_col.insert_one(poi)
 
