@@ -9,6 +9,7 @@ import websockets
 import json
 import httpx
 from redis.asyncio import Redis
+from database import record_position, get_robot_id_by_sn
 
 #Robot IP
 IP = "192.168.0.250"
@@ -60,6 +61,16 @@ async def init_redis(app: FastAPI):
 
 async def pub_robot_status(redis: Redis):
     compile_list = {}
+    prev_pose = None
+    robot_id = None
+
+    await redis.publish("robot:status", json.dumps({
+    "status": "online",
+    "battery": 100,
+    "last_poi": "center"
+}))
+
+    robot_id = await get_robot_id_by_sn("2682406203417T7")
 
     url = DIRECT_WS+"/ws/v2/topics"
     async with websockets.connect(url) as ws:
@@ -79,24 +90,36 @@ async def pub_robot_status(redis: Redis):
                     data_json = json.dumps(compile_list)
 
                     await redis.set("robot:battery", data_json)
-                    #await redis.publish("robot:state", data_json)
+                
+                    await redis.publish("robot:status", data_json)
 
-                # if topic == "/battery_state":
-                #     compile_list.update({"battery":msg})
-                # if topic == "/tracked_pose":
-                #     compile_list.update({"pose":msg})
-                #     data_json = json.dumps(compile_list)
+                elif topic == "/tracked_pose" and robot_id:
+                    pose_data = data.get("pos", [])
+                    ori_data = data.get("ori", 0)
 
-                #     await redis.publish("robot:state", data_json)
+                    if len(pose_data) >= 2:
+                        x, y = float(pose_data[0]), float(pose_data[1])
 
-                    #print(f"TOPIC PUBLISH: [{round(time.time(),1)}]", data_json['pose'])
-            
+                        await record_position(
+                            robot_id=robot_id,
+                            x=x,
+                            y=y,
+                            ori=float(ori_data),
+                            prev_x=prev_pose[0] if prev_pose else None,
+                            prev_y=prev_pose[1] if prev_pose else None
+                        )
+
+                        prev_pose = (x, y)
+                        compile_list.update({"pose": msg})
+                        await redis.publish("robot:pose", json.dumps(compile_list))
+
+                    
         except Exception as e:
             print("WebSocket closed:", e)
             compile_list.update({"status": 'offline'})
             data_json = json.dumps(compile_list)
 
-            await redis.publish("robot:state", data_json)
+            await redis.publish("robot:status", data_json)
             await start_redis_status(redis, False)
         finally:
             await ws.close()

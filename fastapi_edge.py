@@ -10,36 +10,64 @@ import json
 import httpx
 import robot
 from redis.asyncio import Redis
+from database import init_postgres, close_postgres
 from redis_server import init_redis
+
+mongo_client = None
+robot_col = None
+poi_col = None
+background_tasks = []
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global mongo_client, robot_col, poi_col, background_tasks
+
     print("SERVER STARTUP..")
-    mongo_client = MongoClient("mongodb://localhost:27017/")
+    
+    try:
+    
+        # ============ Initialize MongoDB ============
+        mongo_client = MongoClient("mongodb://localhost:27017/")
 
-    db = mongo_client["robotDB"]
+        db = mongo_client["robotDB"]
 
-    global robot_col
-    robot_col = db['robots']
+        robot_col = db['robots']
+        poi_col = db['poi']
+        print("MongoDB connected")
 
-    #app.state.redis = Redis(host="localhost", port=6379, decode_responses=True)
+        # ============ Initialize PostgreSQL ============
+        await init_postgres()
+        print("PostgreSQL connected")
 
-    asyncio.create_task(init_redis(app))
+        # ============ Initialize Redis ============
 
-    #asyncio.create_task(robot.stream_robot_pose())
+        redis_task = asyncio.create_task(init_redis(app))
+        background_tasks.append(redis_task)
+        print("Redis initializing")
 
-    print("SERVER INITIALIZED")
 
-    yield
+        print("SERVER INITIALIZED")
 
-    print("SERVER SHUTTING DOWN...")
+        yield
+    
+    finally:
+
+        print("SERVER SHUTTING DOWN...")
+
+        for task in background_tasks:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(robot.router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # or ["http://localhost:5173"] for Vite, etc.
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

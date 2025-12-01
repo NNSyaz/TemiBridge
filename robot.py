@@ -8,10 +8,26 @@ import websockets
 import json
 import httpx
 from redis.asyncio import Redis
-# import minimap_test as map
-# import  keyboard_input
+from database import (
+    create_task, 
+    update_task_status, 
+    get_robot_id_by_sn, 
+    get_task_history,
+    get_total_distance,
+    get_robot_stats,
+    insert_robot as pg_insert_robot
+)
+
 
 mongo_client = MongoClient("mongodb://localhost:27017/")
+db = mongo_client["robotDB"]
+robot_col = db['robots']
+poi_col = db['poi']
+
+# Router
+router = APIRouter(
+    prefix='/api/v1/robot'
+)
 
 #Robot IP
 IP = "192.168.0.250"
@@ -28,13 +44,15 @@ DIRECT_URL = f"http://{IP}:8090"
 #DIRECT ROBOT WEBSOCKET URL
 DIRECT_WS = f"ws://{IP}:8090"
 
-db = mongo_client["robotDB"]
+#Edge server http url
+EDGE_URL = "http://192.168.0.138:8000"
 
-robot_col = db['robots']
-poi_col = db['poi']
-pose_data = {
-    "data" : ""
-}
+#Edge server websocket url
+EDGE_WS = "ws://192.168.0.138:8000"
+
+# Track active tasks
+current_tasks = {}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -46,17 +64,7 @@ async def lifespan(app: FastAPI):
     global robot_col
     robot_col = db['robots']
 
-    #await stream_robot_pose()
-
-router = APIRouter(
-    prefix='/api/v1/robot'
-)
-
-#Edge server http url
-EDGE_URL = "http://192.168.0.138:8000"
-
-#Edge server websocket url
-EDGE_WS = "ws://192.168.0.138:8000"
+# ============ POI ENDPOINTS (MongoDB) ============
 
 @router.get('/hello')
 async def main_hello():
@@ -70,7 +78,6 @@ async def websocket_hello(websocket: WebSocket):
 
 @router.get("/get/poi_details")
 async def get_poi_list(poi: str):
-    poi_list = []
 
     poi_data = poi_col.find_one({"name" : poi})
     print("POI DATA DETAILS: ", poi_data)
@@ -149,64 +156,171 @@ async def get_robot_status(websocket: WebSocket):
     compile_status = {}
 
     await websocket.accept()
+    print("WebSocket client connected to robot_status")
 
     try:
         while True:
-            battery_raw = json.loads(await redis.get("robot:battery"))
-            status = await redis.get("robot:status")
-            poi = await redis.get("robot:last_poi")
-            print("BATTERY RAW DATA", battery_raw)
-            print("STATUS DATA", status)
-            print("poi DATA", poi)
-
-            battery_data = battery_raw["battery"]
-            battery_percent = json.loads(battery_data)
-            print("BATTERY PERCENT", battery_percent)
-
-            compile_status.update({"status": status, "battery": battery_percent["percentage"]*100, "last_poi": poi})
-            await websocket.send_json(compile_status)
-            await asyncio.sleep(1)
-
+            try:
+                # Get data from Redis
+                battery_raw_str = await redis.get("robot:battery")
+                status = await redis.get("robot:status")
+                poi = await redis.get("robot:last_poi")
+                
+                # Handle missing data gracefully
+                if not battery_raw_str:
+                    compile_status = {
+                        "status": status or "offline",
+                        "battery": 0,
+                        "last_poi": poi or "unknown"
+                    }
+                else:
+                    battery_raw = json.loads(battery_raw_str)
+                    battery_data = battery_raw.get("battery", "{}")
+                    battery_percent = json.loads(battery_data) if isinstance(battery_data, str) else battery_data
+                    
+                    compile_status = {
+                        "status": status or "offline",
+                        "battery": battery_percent.get("percentage", 0) * 100,
+                        "last_poi": poi or "unknown"
+                    }
+                
+                # Send data to client
+                await websocket.send_json(compile_status)
+                await asyncio.sleep(1)
+                
+            except json.JSONDecodeError as e:
+                print(f"JSON decode error: {e}")
+                await asyncio.sleep(1)
+                continue
+                
+    except WebSocketDisconnect:
+        print("WebSocket client disconnected from robot_status")
     except Exception as e:
-        print(e)
+        print(f"WebSocket error: {e}")
     finally:
-        await websocket.close()
+        # Only close if not already closed
+        if websocket.client_state.name != "DISCONNECTED":
+            try:
+                await websocket.close()
+            except RuntimeError:
+                pass  # Already closed
+        print("WebSocket connection cleaned up")
 
 @router.get("/move/poi")
 async def go_to_poi(name: str, request: Request):
     redis = request.app.state.redis
 
-    header = {
-        "Content-Type" : "application/json"
-    }
+    #Get POI from MongoDB
+    poi_data = poi_col.find_one({"name": name})
+    if not poi_data:
+        return {"status": 404, "msg": "POI not found"}
 
-    data = poi_col.find_one({"name" : name})
-    print("DATA: ", data)
-    payload = data["data"]
+    target_payload = poi_data["data"]
 
-    async with httpx.AsyncClient() as client:
+    robot_id = await get_robot_id_by_sn("2682406203417T7")
+
+    if not robot_id:
+        return{"status": 404, "msg": "Robot not in database. Register first."}
+
+    try:
+        pose_str = await redis.get("robot:last_poi")
+        if pose_str:
+            pose_data = json.loads(pose_str) if isinstance(pose_str, str) else pose_str
+            start_x = float(pose_data.get("x", 0))
+            start_y = float(pose_data.get("y", 0))
+        else:
+            start_x, start_y = 0.0, 0.0
+
+    except:
+        start_x, start_y = 0.0, 0.0
+
+    last_poi = await redis.get("robot:last_poi") or "unknown"
+
+    task_id = await create_task(
+        robot_id=robot_id,
+        last_poi=last_poi,
+        target_poi=name,
+        start_x=start_x,
+        start_y=start_y,
+        target_x=float(target_payload["target_x"]),
+        target_y=float(target_payload["target_y"])
+    )
+
+    current_tasks[robot_id] = task_id
+
+    header = {"Content-type": "application/json"}
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
         try:
-            url = DIRECT_URL+"/chassis/moves"
-            r = await client.post(url, headers=header, json=payload)
+            url = DIRECT_URL + "/chassis/moves"
+            r = await client.post(url, headers=header, json=target_payload)
             r.raise_for_status()
             data = r.json()
 
-            status = "active"
-            await redis.set("robot:status", status)
+            await redis.set("robot:status", "active")
             await redis.set("robot:last_poi", name)
 
-            test = await redis.get("robot:status")
-            print("REDIS GET DATA", test)
-
-            return data
+            return{
+                "status": 200,
+                "msg": f"Moving to {name}",
+                "task_id": task_id,
+                "data": data
+            }
+    
         except httpx.ReadTimeout as e:
-            print("Error: ",e)
-            return e
+            await update_task_status(task_id, "failed")
+            return {"status": 504, "msg":"Request timeout"}
+        except Exception as e:
+            await update_task_status(task_id, "failed")
+            return {"status": 500, "msg": str(e)}
 
 @router.get("/move/charge")
 async def move_charge(request: Request):
     redis = request.app.state.redis
     print("Charging Received")
+    
+    # Get robot ID from database
+    robot_id = await get_robot_id_by_sn("2682406203417T7")
+    
+    if not robot_id:
+        return {"status": 404, "msg": "Robot not in database. Register first."}
+    
+    # Get current position from Redis
+    try:
+        pose_str = await redis.get("robot:last_poi")
+        if pose_str:
+            pose_data = json.loads(pose_str) if isinstance(pose_str, str) else pose_str
+            start_x = float(pose_data.get("x", 0))
+            start_y = float(pose_data.get("y", 0))
+        else:
+            start_x, start_y = 0.0, 0.0
+    except:
+        start_x, start_y = 0.0, 0.0
+    
+    last_poi = await redis.get("robot:last_poi") or "unknown"
+    
+    # Get origin (charging station) coordinates from MongoDB
+    origin_poi = poi_col.find_one({"name": "origin"})
+    if origin_poi:
+        target_x = float(origin_poi["data"]["target_x"])
+        target_y = float(origin_poi["data"]["target_y"])
+    else:
+        # Fallback coordinates if origin not found
+        target_x, target_y = 0.0, 0.0
+    
+    # Create task record for charging movement
+    task_id = await create_task(
+        robot_id=robot_id,
+        last_poi=last_poi,
+        target_poi="origin",  # Charging station
+        start_x=start_x,
+        start_y=start_y,
+        target_x=target_x,
+        target_y=target_y
+    )
+    
+    current_tasks[robot_id] = task_id
+    
     header = {
         "Content-Type": "application/json" 
     }
@@ -215,7 +329,7 @@ async def move_charge(request: Request):
         "charge_retry_count" : 3
     }
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             url = DIRECT_URL+"/chassis/moves"
             print("URL: ",url)
@@ -223,12 +337,23 @@ async def move_charge(request: Request):
             r.raise_for_status()
             data = r.json()
             print("MOVE ", data)
+            
+            # Update Redis status
             await redis.set("robot:status", "charging")
+            await redis.set("robot:last_poi", "origin")
 
-            return data
-        except httpx.ConnectTimeout as e:
-            print("Error: ",e)
-            return e
+            return {
+                "status": 200,
+                "msg": "Moving to charging station",
+                "task_id": task_id,
+                "data": data
+            }
+        except httpx.ReadTimeout as e:
+            await update_task_status(task_id, "failed")
+            return {"status": 504, "msg": "Request timeout"}
+        except Exception as e:
+            await update_task_status(task_id, "failed")
+            return {"status": 500, "msg": str(e)}
 
 @router.get("/move")
 async def move_robot():
@@ -255,7 +380,7 @@ async def move_robot():
 @router.get("/test/pose")
 async def get_pose(request: Request):
     pubsub = request.app.state.redis.pubsub()
-    await pubsub.subscribe("robot:state")
+    await pubsub.subscribe("robot:status")
     print("Subscribed to robot:pose")
 
     try:
@@ -403,21 +528,47 @@ async def robot_register(payload: dict = Body(...)):
     nickname = payload["nickname"]
     sn = payload["sn"]
     ip = payload["ip"]
-    status = "idle"
-    last_poi = ""
-    on_time = round(time.time(),1)
-    last_offline = round(time.time(),1)
-    time_created = round(time.time(),1)
 
-    info = {"nickname":nickname, "name":name, "status": status, "last_poi": last_poi, "data" : {"sn": sn, "ip": ip, "time_created": time_created}}
+    if not all([name, nickname, sn, ip]):
+        return {"status": 400, "msg": "Missing required fields: name, nickname, sn, ip"}
 
-    if not robot_col.find_one({"nickname" : nickname}):
-        robot_col.insert_one(info)
+    if robot_col.find_one({"nickname":nickname}):
+        return{"status": 400, "msg": "Robot with same nickname already exist!"}
 
-        return({"status": 200, "msg" : "Successfully Registered!"})
-    else:
-        return({"status": 400, "msg" : "Robot with the same nickname already exist!"})
+    if robot_col.find_one({"sn":sn}):
+        return {"status": 400, "msg": "Robot with same serial number already exists!"}
+
+    try:
+        robot_id = await pg_insert_robot(name, nickname, sn, ip)
+        print(f"Robot inserted into PostgreSQL with ID: {robot_id}")
+
+        mongo_data = {
+            "nickname": nickname,
+            "name": name,
+            "status": "idle",
+            "last_poi": "",
+            "data": {
+                "sn": sn,
+                "ip": ip,
+                "time_created": time.time()
+            }
+        }
+        mongo_result = robot_col.insert_one(mongo_data)
+        print(f" Robot inserted into MongoDB with _id: {mongo_result.inserted_id}")
+
+        return {
+            "status": 200,
+            "msg": "Successfully Registered!",
+            "robot_id": robot_id,
+            "postgres_id": robot_id,
+            "mongo_id" : str(mongo_result.inserted_id)
+        }
     
+    except Exception as e:
+        print(f" Registration error: {str(e)}")
+        robot_col.delete_one({"nickname": nickname})
+        return {"status": 500, "msg": f"Registration failed: {str(e)}"}
+
 @router.get("/get/robot_list")
 async def robot_register():
     robot_list = []
@@ -553,3 +704,18 @@ async def stream_robot_pose(redis: Redis):
             print("WebSocket closed:", e)
         finally:
             ws.close()
+
+#---------------- ANALYTICS ENDPOINTS (PostgreSQL) --------------------
+
+@router.get("/get/task_history")
+async def api_get_task_history(robot_id: int = None):
+    return await get_task_history(robot_id)
+
+@router.get("/get/total_distance")
+async def api_get_total_distance(robot_id: int):
+    distance = await get_total_distance(robot_id)
+    return {"robot_id": robot_id, "total_distance_meters": distance}
+
+@router.get("/get/robot_stats")
+async def api_get_robot_stats(robot_id: int):
+    return await get_robot_stats(robot_id)
