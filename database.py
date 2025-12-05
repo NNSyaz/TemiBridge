@@ -70,18 +70,25 @@ async def update_robot_status(robot_id: int, status: str, last_poi: str = None):
 
 # =========== TASK OPERATIONS ============
 
-async def create_task(robot_id: int, last_poi: str, target_poi:str, start_x:float, start_y:float, target_x:float, target_y:float) -> int:
+async def create_task(
+    robot_id: int, 
+    last_poi: str, 
+    target_poi: str, 
+    start_x: float, 
+    start_y: float, 
+    target_x: float, 
+    target_y: float
+) -> int:
     """Create new task record"""
-
     distance = calculate_distance(start_x, start_y, target_x, target_y)
     task_id = int(datetime.datetime.now().timestamp() * 1000)
     
     async with pool.acquire() as conn:
         await conn.execute('''
-                INSERT INTO tasks_history 
-                (task_id, robot_id, last_poi, target_poi, status, distance, start_time, end_time)
-                VALUES ($1, $2, $3, $4, 'in_progress', $5, NOW(), NOW())
-            ''', task_id, robot_id, last_poi, target_poi, distance)
+            INSERT INTO tasks_history 
+            (task_id, robot_id, last_poi, target_poi, status, distance, start_time, end_time)
+            VALUES ($1, $2, $3, $4, 'in_progress', $5, NOW(), NOW())
+        ''', task_id, robot_id, last_poi, target_poi, distance)
         
         return task_id
     

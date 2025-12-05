@@ -246,6 +246,8 @@ async def go_to_poi(name: str, request: Request):
         target_y=target_y
     )
 
+    await redis.set("robot:current_task_id", task_id)
+
     current_tasks[robot_id] = task_id
 
     header = {"Content-type": "application/json"}
@@ -258,6 +260,7 @@ async def go_to_poi(name: str, request: Request):
             data = r.json()
 
             await redis.set("robot:status", "active")
+            await redis.set("robor:state", "moving")
             await redis.set("robot:last_poi", name)
 
             return{
@@ -269,9 +272,11 @@ async def go_to_poi(name: str, request: Request):
     
         except httpx.ReadTimeout as e:
             await update_task_status(task_id, "failed")
+            await redis.delete("robot:current_task_id")
             return {"status": 504, "msg":"Request timeout"}
         except Exception as e:
             await update_task_status(task_id, "failed")
+            await redis.delete("robot:current_task_id")
             return {"status": 500, "msg": str(e)}
 
 @router.get("/move/charge")
@@ -315,6 +320,8 @@ async def move_charge(request: Request):
         target_x=target_x,
         target_y=target_y
     )
+
+    await redis.set("robot:current_task_id", task_id)
     
     current_tasks[robot_id] = task_id
     
@@ -337,6 +344,7 @@ async def move_charge(request: Request):
             
             # Update Redis status
             await redis.set("robot:status", "charging")
+            await redis.set("robot:state", "moving")
             await redis.set("robot:last_poi", "origin")
 
             return {
@@ -347,9 +355,11 @@ async def move_charge(request: Request):
             }
         except httpx.ReadTimeout as e:
             await update_task_status(task_id, "failed")
+            await redis.delete("robot:current_task_id")
             return {"status": 504, "msg": "Request timeout"}
         except Exception as e:
             await update_task_status(task_id, "failed")
+            await redis.delete("robot:current_task_id")
             return {"status": 500, "msg": str(e)}
 
 @router.get("/move")
@@ -457,26 +467,32 @@ async def set_velocity(vel: str):
             return data
 
 @router.get("/move/cancel")
-async def go_to_poi():
-    header = {
-        "Content-Type" : "application/json"
-    }
+async def cancel_move(request: Request):
+    """Cancel Current Movement"""
+    redis = request.app.state.redis
+    header = {"Content-Type":"application/json"}
+    payload = {"state":"cancelled"}
 
-    payload = {
-        "state": "cancelled"
-    }
+    current_task_id = await redis.get("robot:current_task_id")
 
     async with httpx.AsyncClient() as client:
         try:
-            url = DIRECT_URL+"/chassis/moves/current"
+            url = DIRECT_URL + "/chassis/moves/current"
             r = await client.patch(url, headers=header, json=payload)
             r.raise_for_status()
             data = r.json()
 
+            if current_task_id:
+                await update_task_status(int(current_task_id), "cancelled")
+                await redis.delete("robot:current_task_id")
+
+            await redis.set("robot:status", "idle")
+            await redis.set("robot:state", "cancelled")
+
             return data
         except httpx.ReadTimeout as e:
-            print("Error: ",e)
-            return e
+            print("Error: ", e)
+            return {"status": 504, "msg": "Request timeout"}
 
 #For Autoxing with jack
 @router.get("/jack/up")
