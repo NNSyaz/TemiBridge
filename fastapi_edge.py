@@ -1,3 +1,4 @@
+# fastapi_edge.py
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient
@@ -9,9 +10,11 @@ import websockets
 import json
 import httpx
 import robot
+import database
 from redis.asyncio import Redis
 from database import init_postgres, close_postgres
 from redis_server import init_redis
+
 
 mongo_client = None
 robot_col = None
@@ -45,7 +48,7 @@ async def lifespan(app: FastAPI):
         background_tasks.append(redis_task)
         print("Redis initializing")
 
-
+        await asyncio.sleep(2)
         print("SERVER INITIALIZED")
 
         yield

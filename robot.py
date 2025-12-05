@@ -45,10 +45,10 @@ DIRECT_URL = f"http://{IP}:8090"
 DIRECT_WS = f"ws://{IP}:8090"
 
 #Edge server http url
-EDGE_URL = "http://192.168.0.138:8000"
+EDGE_URL = "http://192.168.0.142:8000"
 
 #Edge server websocket url
-EDGE_WS = "ws://192.168.0.138:8000"
+EDGE_WS = "ws://192.168.0.142:8000"
 
 # Track active tasks
 current_tasks = {}
@@ -164,13 +164,15 @@ async def get_robot_status(websocket: WebSocket):
                 battery_raw_str = await redis.get("robot:battery")
                 status = await redis.get("robot:status")
                 poi = await redis.get("robot:last_poi")
+                state = await redis.get("robot:state")
                 
                 # Handle missing data gracefully
                 if not battery_raw_str:
                     compile_status = {
                         "status": status or "offline",
                         "battery": 0,
-                        "last_poi": poi or "unknown"
+                        "last_poi": poi or "unknown",
+                        "state": state or "unknown"
                     }
                 else:
                     battery_raw = json.loads(battery_raw_str)
@@ -180,7 +182,8 @@ async def get_robot_status(websocket: WebSocket):
                     compile_status = {
                         "status": status or "offline",
                         "battery": battery_percent.get("percentage", 0) * 100,
-                        "last_poi": poi or "unknown"
+                        "last_poi": poi or "unknown",
+                        "state": state or "unknown"
                     }
                 
                 # Send data to client
@@ -215,34 +218,32 @@ async def go_to_poi(name: str, request: Request):
         return {"status": 404, "msg": "POI not found"}
 
     target_payload = poi_data["data"]
+    target_x = float(target_payload["target_x"])
+    target_y = float(target_payload["target_y"])
 
     robot_id = await get_robot_id_by_sn("2682406203417T7")
 
     if not robot_id:
         return{"status": 404, "msg": "Robot not in database. Register first."}
 
-    try:
-        pose_str = await redis.get("robot:last_poi")
-        if pose_str:
-            pose_data = json.loads(pose_str) if isinstance(pose_str, str) else pose_str
-            start_x = float(pose_data.get("x", 0))
-            start_y = float(pose_data.get("y", 0))
-        else:
-            start_x, start_y = 0.0, 0.0
+    last_poi_name = await redis.get("robot:last_poi") or "origin"
 
-    except:
-        start_x, start_y = 0.0, 0.0
+    last_poi_data = poi_col.find_one({"name": last_poi_name})
+    if last_poi_data:
+        start_x = float(last_poi_data["data"]["target_x"])
+        start_y = float(last_poi_data["data"]["target_y"])
 
-    last_poi = await redis.get("robot:last_poi") or "unknown"
+    else:
+        start_x, start_y= 0.0, 0.0
 
     task_id = await create_task(
         robot_id=robot_id,
-        last_poi=last_poi,
+        last_poi=last_poi_name,
         target_poi=name,
         start_x=start_x,
         start_y=start_y,
-        target_x=float(target_payload["target_x"]),
-        target_y=float(target_payload["target_y"])
+        target_x=target_x,
+        target_y=target_y
     )
 
     current_tasks[robot_id] = task_id
@@ -284,33 +285,30 @@ async def move_charge(request: Request):
     if not robot_id:
         return {"status": 404, "msg": "Robot not in database. Register first."}
     
-    # Get current position from Redis
-    try:
-        pose_str = await redis.get("robot:last_poi")
-        if pose_str:
-            pose_data = json.loads(pose_str) if isinstance(pose_str, str) else pose_str
-            start_x = float(pose_data.get("x", 0))
-            start_y = float(pose_data.get("y", 0))
-        else:
-            start_x, start_y = 0.0, 0.0
-    except:
+    # Get last POI name from Redis
+    last_poi_name = await redis.get("robot:last_poi") or "unknown"
+
+    # Look up coordinates of last POI from MongoDB
+
+    last_poi_data = poi_col.find_one({"name": last_poi_name})
+    if last_poi_data:
+        start_x = float(last_poi_data["data"]["target_x"])
+        start_y = float(last_poi_data["data"]["target_y"])
+    else:
         start_x, start_y = 0.0, 0.0
-    
-    last_poi = await redis.get("robot:last_poi") or "unknown"
-    
-    # Get origin (charging station) coordinates from MongoDB
+  
     origin_poi = poi_col.find_one({"name": "origin"})
+
     if origin_poi:
         target_x = float(origin_poi["data"]["target_x"])
         target_y = float(origin_poi["data"]["target_y"])
     else:
-        # Fallback coordinates if origin not found
         target_x, target_y = 0.0, 0.0
     
     # Create task record for charging movement
     task_id = await create_task(
         robot_id=robot_id,
-        last_poi=last_poi,
+        last_poi=last_poi_name,
         target_poi="origin",  # Charging station
         start_x=start_x,
         start_y=start_y,

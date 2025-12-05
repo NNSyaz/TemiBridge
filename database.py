@@ -1,3 +1,4 @@
+# database.py
 import asyncpg
 from typing import Optional
 import math
@@ -31,7 +32,6 @@ async def close_postgres():
 def calculate_distance(x1: float, y1: float, x2: float, y2: float) -> float:
     """Calculate Euclidean distance"""
     return math.sqrt((x2 - x1)**2 +(y2 - y1)**2)
-
 
 # =========== ROBOT OPERATIONS ============
 
@@ -70,7 +70,7 @@ async def update_robot_status(robot_id: int, status: str, last_poi: str = None):
 
 # =========== TASK OPERATIONS ============
 
-async def create_task(robot_id: int, last_poi: str, target_poi: str, start_x: float, start_y: float, target_x: float, target_y: float) -> int:
+async def create_task(robot_id: int, last_poi: str, target_poi:str, start_x:float, start_y:float, target_x:float, target_y:float) -> int:
     """Create new task record"""
 
     distance = calculate_distance(start_x, start_y, target_x, target_y)
