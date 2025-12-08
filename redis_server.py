@@ -9,7 +9,7 @@ import websockets
 import json
 import httpx
 from redis.asyncio import Redis
-from database import record_position, get_robot_id_by_sn
+from database import record_position, get_robot_id_by_sn, update_task_status
 
 #Robot IP
 IP = "192.168.0.250"
@@ -58,6 +58,7 @@ async def init_redis(app: FastAPI):
     #await start_redis_status(app.state.redis)
     asyncio.create_task(pub_robot_status(app.state.redis))
     asyncio.create_task(pub_lidar_points(app.state.redis))
+    asyncio.create_task(monitor_planning_state(app.state.redis))
 
 async def pub_robot_status(redis: Redis):
     compile_list = {}
@@ -124,6 +125,131 @@ async def pub_robot_status(redis: Redis):
         finally:
             await ws.close()
 
+async def monitor_planning_state(redis: Redis):
+
+    url = DIRECT_WS + "ws/v2/topics"
+
+    async with websockets.connect(url) as ws:
+        try:
+            await ws.send(json.dumps({"enable_topic":["/planning_state"]}))
+            print("Subcribed to /planning_state")
+
+            while True:
+                msg = ws.recv()
+                data = json.loads(msg)
+
+                if data.get("topic") == "/planning_state":
+                    await handle_planning_state(redis, data)
+
+        except Exception as e:
+            print(f"Planning state monitor error: {e}")
+        finally:
+            await ws.close
+
+async def handle_planning_state(redis: Redis, data: dict):
+    """
+    Process planning state updates and update task status
+    
+    move_state values:
+    - "moving": Task in progress
+    - "succeeded": Task completed successfully
+    - "failed": Task failed
+    - "cancelled": Task was cancelled
+    """
+
+    move_state = data.get("move_state")
+    action_id = data.get("action_id")
+    fail_reason = data.get("fail_reason_str", "none")
+    remaining_distance = data.get("remaining_distance", 0.0)
+
+    print(f" Planning_state {move_state} | Action: {action_id} | Distance:{remaining_distance}m")
+
+    #Store current planning state in Redis
+    await redis.set("robot:planning_state", json.dumps(data))
+
+    # Get current task ID from Redis
+    current_task_id = redis.get("robot:current_task_id")
+
+    if not current_task_id:
+        print("No active task ID found")
+        return
+
+    current_task_id = int(current_task_id)
+
+    #Update robot status based on move_state
+    if move_state == "moving":
+        await redis.set("robot:status", "active")
+        await redis.set("robot:state", "moving")
+        print(f"Task {current_task_id} in progress ({remaining_distance:.2f})m remaining")
+        
+    elif move_state == "succeeded":
+        await redis.set("robot:status", "idle")
+        await redis.set("robot:state", "idle")
+
+        #Update task status in PostgreSQL
+        await update_task_status(current_task_id, "completed")
+
+        print(f"Task {current_task_id} complete successfully")
+
+        # Publish completion event
+        await redis.publish("robot:task_completed", json.dumps({
+            "task_id": current_task_id,
+            "status": "completed",
+            "timestamp": time.time()
+        }))
+
+    elif move_state == "failed":
+        await redis.set("robot:status", "error")
+        await redis.set("robot:state", "failed")
+
+        #Update fail task status progress in postgresql
+        await update_task_status(current_task_id, "failed", fail_reason)
+
+        await redis.delete("robot:current_task_id")
+
+        print(f"Task {current_task_id} failed: {fail_reason}")
+
+        await redis.publish("robot:task_failed", json.dumps({
+            "task_id": current_task_id,
+            "status": "failed",
+            "reason": fail_reason,
+            "timestamp": time.time()
+        }))
+
+    elif move_state == "cancelled":
+        await redis.set("robot:status", "idle"),
+        await redis.set("robot:state", "cancelled")
+
+        #Update task status in the postgresql
+        await update_task_status(current_task_id, "cancelled")
+
+        #Clear current task
+        await redis.delete("robot:current_task_id")
+
+        print(f"Task {current_task_id} cancelled")
+
+        await redis.publish("robot:task_cancelled", json.dumps({
+            "task_id": current_task_id,
+            "status": "cancelled",
+            "timestamp": time.time()
+        })) 
+
+async def pub_lidar_points(redis: Redis):
+    """Publishes lidar point cloud data"""
+    url = DIRECT_WS + "/ws/v2/topics"
+
+    async with websockets.connect(url) as ws:
+        try:
+            await ws.send(json.dumps({"disable_topic": ["/slam/state"]}))
+            await ws.send(json.dumps({"enable":["/scan_matched_points2"]}))
+
+            while True:
+                msg = await ws.recv()
+                await redis.publish("robot:lidar", msg)
+
+        except Exception as e:
+            print(e)
+
 async def sub_robot_status(request: Request):
     pubsub = request.app.state.redis.pubsub()
     await pubsub.subscribe("robot:pose")
@@ -142,26 +268,7 @@ async def sub_robot_status(request: Request):
         await websockets.close()
         await pubsub.close()
         print("Subscriber closed")
-
-async def pub_lidar_points(redis: Redis):
-    url = DIRECT_WS+"/ws/v2/topics"
-
-    async with websockets.connect(url) as ws:
-        try:
-            await ws.send(json.dumps({"disable_topic": ["/slam/state"]}))
-            await ws.send(json.dumps({"enable_topic": ["/scan_matched_points2"]}))
-
-            while True:
-                msg = await ws.recv()
-
-                await redis.publish(
-                    "robot:lidar", msg
-                )
-
-                #print(f"TOPIC PUBLISH: [{round(time.time(),1)}]", msg)
-
-        except Exception as e:
-            print(e)   
+ 
 
 async def start_redis_status(redis: Redis, stat: bool):
     print("ROBOT REDIS BOOL STATUS: ",stat)
