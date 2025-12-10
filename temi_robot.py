@@ -1,9 +1,10 @@
-from fastapi import FastAPI, APIRouter, WebSocket, Request, Body, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, Request, Body, WebSocketDisconnect
 from typing import Dict, Optional
 import asyncio
 import json
 import time
 import websockets
+import requests
 from redis.asyncio import Redis
 from database import (
     create_task, 
@@ -13,15 +14,11 @@ from database import (
 )
 from pymongo import MongoClient
 
-app = FastAPI()
-
-
 # MongoDB setup
 mongo_client = MongoClient("mongodb://localhost:27017/")
 db = mongo_client["robotDB"]
 robot_col = db['robots']
-poi_col = db['poi']  # Coordinate-based POI (Fielder/Kennon)
-temi_locations_col = db['temi_locations']  # Temi location names
+poi_col = db['poi']
 
 router = APIRouter(
     prefix='/api/v1/robot/temi'

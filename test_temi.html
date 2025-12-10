@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Temi WebSocket Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        #status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .connected { background: #4CAF50; color: white; }
+        .disconnected { background: #F44336; color: white; }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            font-size: 16px;
+            cursor: pointer;
+            background: #2196F3;
+            color: white;
+            border: none;
+            border-radius: 5px;
+        }
+        button:hover { background: #1976D2; }
+        #log {
+            background: #f5f5f5;
+            padding: 10px;
+            height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        input[type="text"] {
+            padding: 8px;
+            width: 300px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🤖 Temi Robot WebSocket Test</h1>
+    
+    <div id="status" class="disconnected">DISCONNECTED</div>
+    
+    <div>
+        <label>Temi IP: </label>
+        <input type="text" id="temiIp" value="192.168.1.100" placeholder="192.168.1.100">
+        <button onclick="connect()">Connect</button>
+        <button onclick="disconnect()">Disconnect</button>
+    </div>
+    
+    <h3>Commands</h3>
+    <div>
+        <button onclick="sendCommand('get_status')">Get Status</button>
+        <button onclick="sendCommand('get_locations')">Get Locations</button>
+    </div>
+    
+    <div>
+        <input type="text" id="locationInput" placeholder="Location name">
+        <button onclick="goToLocation()">Go To Location</button>
+        <button onclick="sendCommand('stop')">Stop</button>
+    </div>
+    
+    <div>
+        <input type="text" id="speechInput" placeholder="Text to speak">
+        <button onclick="speak()">Speak</button>
+    </div>
+    
+    <div>
+        <input type="text" id="saveLocationInput" placeholder="Location name">
+        <button onclick="saveLocation()">Save Current Location</button>
+    </div>
+    
+    <h3>Log</h3>
+    <div id="log"></div>
+    
+    <script>
+        let ws = null;
+        
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const time = new Date().toLocaleTimeString();
+            const color = type === 'error' ? 'red' : type === 'send' ? 'blue' : 'green';
+            logDiv.innerHTML += `<div style="color: ${color}">[${time}] ${message}</div>`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+        
+        function connect() {
+            const ip = document.getElementById('temiIp').value;
+            const url = `ws://${ip}:8080`;
+            
+            log(`Connecting to ${url}...`);
+            
+            ws = new WebSocket(url);
+            
+            ws.onopen = () => {
+                document.getElementById('status').textContent = 'CONNECTED';
+                document.getElementById('status').className = 'connected';
+                log('✅ Connected!');
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                log(`📨 Received: ${JSON.stringify(data, null, 2)}`);
+            };
+            
+            ws.onerror = (error) => {
+                log('❌ Error: ' + error, 'error');
+            };
+            
+            ws.onclose = () => {
+                document.getElementById('status').textContent = 'DISCONNECTED';
+                document.getElementById('status').className = 'disconnected';
+                log('Connection closed');
+            };
+        }
+        
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+        
+        function sendCommand(command, params = {}) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                log('❌ Not connected!', 'error');
+                return;
+            }
+            
+            const message = { command, ...params };
+            ws.send(JSON.stringify(message));
+            log(`📤 Sent: ${JSON.stringify(message)}`, 'send');
+        }
+        
+        function goToLocation() {
+            const location = document.getElementById('locationInput').value;
+            if (location) {
+                sendCommand('goto', { location });
+            }
+        }
+        
+        function speak() {
+            const text = document.getElementById('speechInput').value;
+            if (text) {
+                sendCommand('speak', { text });
+            }
+        }
+        
+        function saveLocation() {
+            const name = document.getElementById('saveLocationInput').value;
+            if (name) {
+                sendCommand('save_location', { name });
+            }
+        }
+    </script>
+</body>
+</html>

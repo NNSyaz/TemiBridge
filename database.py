@@ -1,4 +1,3 @@
-# database.py
 import asyncpg
 from typing import Optional
 import math
@@ -35,14 +34,21 @@ def calculate_distance(x1: float, y1: float, x2: float, y2: float) -> float:
 
 # =========== ROBOT OPERATIONS ============
 
-async def insert_robot(name: str, nickname: str, sn: str, ip: str, model: str = "AMR"):
+async def insert_robot(
+    name: str, 
+    nickname: str, 
+    sn: str, 
+    ip: str, 
+    model: str = "AMR",
+    robot_type: str = "FIELDER"  # NEW PARAMETER
+):
     """Insert a new robot into db"""
     async with pool.acquire() as conn:
         robot_id = await conn.fetchval('''
-            INSERT INTO robots (name, nickname, sn, ip, model, status, time_created)
-            VALUES ($1, $2, $3, $4, $5, 'idle', NOW())
+            INSERT INTO robots (name, nickname, sn, ip, model, robot_type, status, time_created)
+            VALUES ($1, $2, $3, $4, $5, $6, 'idle', NOW())
             RETURNING id
-        ''', name, nickname, sn, ip, model)
+        ''', name, nickname, sn, ip, model, robot_type)
         
         return robot_id
     
