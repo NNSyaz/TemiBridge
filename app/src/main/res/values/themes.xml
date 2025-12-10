@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base application theme -->
+    <style name="Theme.TemiBridge" parent="Theme.AppCompat.Light.DarkActionBar">
+        <!-- Primary brand color -->
+        <item name="colorPrimary">#2196F3</item>
+        <item name="colorPrimaryDark">#1976D2</item>
+        <item name="colorAccent">#4CAF50</item>
+
+        <!-- Status bar color -->
+        <item name="android:statusBarColor">#1976D2</item>
+
+        <!-- Customize your theme here -->
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+</resources>
