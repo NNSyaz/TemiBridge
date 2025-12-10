@@ -126,8 +126,18 @@ class TemiWebSocketServer(
     override fun serve(session: IHTTPSession): Response {
         val uri = session.uri
 
-        return when {
-            uri == "/health" -> {
+        // Check if this is a WebSocket upgrade request
+        val headers = session.headers
+        val upgrade = headers["upgrade"]
+
+        if (upgrade != null && upgrade.equals("websocket", ignoreCase = true)) {
+            // Let the parent class handle WebSocket upgrade
+            return super.serve(session)
+        }
+
+        // Handle regular HTTP requests
+        return when (uri) {
+            "/health" -> {
                 val status = mapOf(
                     "status" to "online",
                     "connections" to activeConnections.size,
@@ -141,7 +151,7 @@ class TemiWebSocketServer(
                 )
             }
 
-            uri == "/info" -> {
+            "/info" -> {
                 val info = mapOf(
                     "service" to "Temi Robot Bridge",
                     "version" to "1.0",
