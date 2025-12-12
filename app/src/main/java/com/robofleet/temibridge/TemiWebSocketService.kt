@@ -30,7 +30,7 @@ class TemiWebSocketService : Service() {
     private val httpClient = OkHttpClient()
 
     // CHANGE THIS to your FastAPI server URL
-    private var fastapiServerUrl = "http://192.168.0.142:8000"
+    private var fastapiServerUrl = "http://192.168.0.183:8000"
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var statusReportJob: Job? = null
